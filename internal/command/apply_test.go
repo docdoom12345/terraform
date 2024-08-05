@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -15,16 +18,16 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/mitchellh/cli"
+	"github.com/hashicorp/cli"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/plans"
 	"github.com/hashicorp/terraform/internal/providers"
+	testing_provider "github.com/hashicorp/terraform/internal/providers/testing"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/states/statemgr"
-	"github.com/hashicorp/terraform/internal/terraform"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
@@ -296,7 +299,7 @@ func TestApply_parallelism(t *testing.T) {
 	providerFactories := map[addrs.Provider]providers.Factory{}
 	for i := 0; i < 10; i++ {
 		name := fmt.Sprintf("test%d", i)
-		provider := &terraform.MockProvider{}
+		provider := &testing_provider.MockProvider{}
 		provider.GetProviderSchemaResponse = &providers.GetProviderSchemaResponse{
 			ResourceTypes: map[string]providers.Schema{
 				name + "_instance": {Block: &configschema.Block{}},
@@ -790,18 +793,21 @@ func TestApply_plan_remoteState(t *testing.T) {
 
 	_, snap := testModuleWithSnapshot(t, "apply")
 	backendConfig := cty.ObjectVal(map[string]cty.Value{
-		"address":                cty.StringVal(srv.URL),
-		"update_method":          cty.NullVal(cty.String),
-		"lock_address":           cty.NullVal(cty.String),
-		"unlock_address":         cty.NullVal(cty.String),
-		"lock_method":            cty.NullVal(cty.String),
-		"unlock_method":          cty.NullVal(cty.String),
-		"username":               cty.NullVal(cty.String),
-		"password":               cty.NullVal(cty.String),
-		"skip_cert_verification": cty.NullVal(cty.Bool),
-		"retry_max":              cty.NullVal(cty.String),
-		"retry_wait_min":         cty.NullVal(cty.String),
-		"retry_wait_max":         cty.NullVal(cty.String),
+		"address":                   cty.StringVal(srv.URL),
+		"update_method":             cty.NullVal(cty.String),
+		"lock_address":              cty.NullVal(cty.String),
+		"unlock_address":            cty.NullVal(cty.String),
+		"lock_method":               cty.NullVal(cty.String),
+		"unlock_method":             cty.NullVal(cty.String),
+		"username":                  cty.NullVal(cty.String),
+		"password":                  cty.NullVal(cty.String),
+		"skip_cert_verification":    cty.NullVal(cty.Bool),
+		"retry_max":                 cty.NullVal(cty.String),
+		"retry_wait_min":            cty.NullVal(cty.String),
+		"retry_wait_max":            cty.NullVal(cty.String),
+		"client_ca_certificate_pem": cty.NullVal(cty.String),
+		"client_certificate_pem":    cty.NullVal(cty.String),
+		"client_private_key_pem":    cty.NullVal(cty.String),
 	})
 	backendConfigRaw, err := plans.NewDynamicValue(backendConfig, backendConfig.Type())
 	if err != nil {
@@ -894,6 +900,16 @@ func TestApply_planWithVarFile(t *testing.T) {
 }
 
 func TestApply_planVars(t *testing.T) {
+	// This test ensures that it isn't allowed to set input variables
+	// when applying from a saved plan file, since in that case the
+	// variable values come from the saved plan file.
+	//
+	// This situation was originally checked by the apply command itself,
+	// and that's what this test was originally exercising. This rule
+	// is now enforced by the "local" backend instead, but this test
+	// is still valid since the command instance delegates to the
+	// local backend.
+
 	planPath := applyFixturePlanFile(t)
 	statePath := testTempFile(t)
 
@@ -2154,7 +2170,7 @@ func applyFixtureSchema() *providers.GetProviderSchemaResponse {
 // GetSchemaResponse, PlanResourceChangeFn, and ApplyResourceChangeFn populated,
 // with the plan/apply steps just passing through the data determined by
 // Terraform Core.
-func applyFixtureProvider() *terraform.MockProvider {
+func applyFixtureProvider() *testing_provider.MockProvider {
 	p := testProvider()
 	p.GetProviderSchemaResponse = applyFixtureSchema()
 	p.PlanResourceChangeFn = func(req providers.PlanResourceChangeRequest) providers.PlanResourceChangeResponse {

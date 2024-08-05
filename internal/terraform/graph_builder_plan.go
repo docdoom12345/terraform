@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package terraform
 
 import (
@@ -6,6 +9,8 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/dag"
+	"github.com/hashicorp/terraform/internal/moduletest/mocking"
+	"github.com/hashicorp/terraform/internal/providers"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
@@ -34,6 +39,12 @@ type PlanGraphBuilder struct {
 	// of the plan walk.
 	RootVariableValues InputValues
 
+	// ExternalProviderConfigs are pre-initialized root module provider
+	// configurations that the graph builder should assume will be available
+	// immediately during the subsequent plan walk, without any explicit
+	// initialization step.
+	ExternalProviderConfigs map[addrs.RootProviderConfig]providers.Interface
+
 	// Plugins is a library of plug-in components (providers and
 	// provisioners) available for use.
 	Plugins *contextPlugins
@@ -48,6 +59,11 @@ type PlanGraphBuilder struct {
 
 	// skipRefresh indicates that we should skip refreshing managed resources
 	skipRefresh bool
+
+	// preDestroyRefresh indicates that we are executing the refresh which
+	// happens immediately before a destroy plan, which happens to use the
+	// normal planing mode so skipPlanChanges cannot be set.
+	preDestroyRefresh bool
 
 	// skipPlanChanges indicates that we should skip the step of comparing
 	// prior state with configuration and generating planned changes to
@@ -65,8 +81,31 @@ type PlanGraphBuilder struct {
 	// Plan Operation this graph will be used for.
 	Operation walkOperation
 
+	// ExternalReferences allows the external caller to pass in references to
+	// nodes that should not be pruned even if they are not referenced within
+	// the actual graph.
+	ExternalReferences []*addrs.Reference
+
+	// Overrides provides the set of overrides supplied by the testing
+	// framework.
+	Overrides *mocking.Overrides
+
 	// ImportTargets are the list of resources to import.
 	ImportTargets []*ImportTarget
+
+	// forgetResources lists the resources that are to be forgotten, i.e. removed
+	// from state without destroying.
+	forgetResources []addrs.ConfigResource
+
+	// forgetModules lists the modules that are to be forgotten, i.e. removed
+	// from state without destroying.
+	forgetModules []addrs.Module
+
+	// GenerateConfig tells Terraform where to write and generated config for
+	// any import targets that do not already have configuration.
+	//
+	// If empty, then config will not be generated.
+	GenerateConfigPath string
 }
 
 // See GraphBuilder
@@ -103,16 +142,30 @@ func (b *PlanGraphBuilder) Steps() []GraphTransformer {
 			skip: b.Operation == walkPlanDestroy,
 
 			importTargets: b.ImportTargets,
+
+			// We only want to generate config during a plan operation.
+			generateConfigPathForImportTargets: b.GenerateConfigPath,
 		},
 
 		// Add dynamic values
-		&RootVariableTransformer{Config: b.Config, RawValues: b.RootVariableValues},
-		&ModuleVariableTransformer{Config: b.Config},
+		&RootVariableTransformer{
+			Config:       b.Config,
+			RawValues:    b.RootVariableValues,
+			Planning:     true,
+			DestroyApply: false, // always false for planning
+		},
+		&ModuleVariableTransformer{
+			Config:       b.Config,
+			Planning:     true,
+			DestroyApply: false, // always false for planning
+		},
+		&variableValidationTransformer{},
 		&LocalTransformer{Config: b.Config},
 		&OutputTransformer{
 			Config:      b.Config,
-			RefreshOnly: b.skipPlanChanges,
-			PlanDestroy: b.Operation == walkPlanDestroy,
+			RefreshOnly: b.skipPlanChanges || b.preDestroyRefresh,
+			Destroying:  b.Operation == walkPlanDestroy,
+			Overrides:   b.Overrides,
 
 			// NOTE: We currently treat anything built with the plan graph
 			// builder as "planning" for our purposes here, because we share
@@ -120,6 +173,13 @@ func (b *PlanGraphBuilder) Steps() []GraphTransformer {
 			// types and so the pre-planning walks still think they are
 			// producing a plan even though we immediately discard it.
 			Planning: true,
+		},
+
+		// Add nodes and edges for the check block assertions. Check block data
+		// sources were added earlier.
+		&checkTransformer{
+			Config:    b.Config,
+			Operation: b.Operation,
 		},
 
 		// Add orphan resources
@@ -145,13 +205,17 @@ func (b *PlanGraphBuilder) Steps() []GraphTransformer {
 		&AttachStateTransformer{State: b.State},
 
 		// Create orphan output nodes
-		&OrphanOutputTransformer{Config: b.Config, State: b.State},
+		&OrphanOutputTransformer{
+			Config:   b.Config,
+			State:    b.State,
+			Planning: true,
+		},
 
 		// Attach the configuration to any resources
 		&AttachResourceConfigTransformer{Config: b.Config},
 
 		// add providers
-		transformProviders(b.ConcreteProvider, b.Config),
+		transformProviders(b.ConcreteProvider, b.Config, b.ExternalProviderConfigs),
 
 		// Remove modules no longer present in the config
 		&RemovedModuleTransformer{Config: b.Config, State: b.State},
@@ -165,6 +229,11 @@ func (b *PlanGraphBuilder) Steps() []GraphTransformer {
 		// objects that can belong to modules.
 		&ModuleExpansionTransformer{Concrete: b.ConcreteModule, Config: b.Config},
 
+		// Plug in any external references.
+		&ExternalReferenceTransformer{
+			ExternalReferences: b.ExternalReferences,
+		},
+
 		&ReferenceTransformer{},
 
 		&AttachDependenciesTransformer{},
@@ -175,7 +244,9 @@ func (b *PlanGraphBuilder) Steps() []GraphTransformer {
 
 		// DestroyEdgeTransformer is only required during a plan so that the
 		// TargetsTransformer can determine which nodes to keep in the graph.
-		&DestroyEdgeTransformer{},
+		&DestroyEdgeTransformer{
+			Operation: b.Operation,
+		},
 
 		&pruneUnusedNodesTransformer{
 			skip: b.Operation != walkPlanDestroy,
@@ -214,6 +285,7 @@ func (b *PlanGraphBuilder) initPlan() {
 			NodeAbstractResource: a,
 			skipRefresh:          b.skipRefresh,
 			skipPlanChanges:      b.skipPlanChanges,
+			preDestroyRefresh:    b.preDestroyRefresh,
 			forceReplace:         b.ForceReplace,
 		}
 	}
@@ -223,6 +295,8 @@ func (b *PlanGraphBuilder) initPlan() {
 			NodeAbstractResourceInstance: a,
 			skipRefresh:                  b.skipRefresh,
 			skipPlanChanges:              b.skipPlanChanges,
+			forgetResources:              b.forgetResources,
+			forgetModules:                b.forgetModules,
 		}
 	}
 
@@ -233,6 +307,8 @@ func (b *PlanGraphBuilder) initPlan() {
 
 			skipRefresh:     b.skipRefresh,
 			skipPlanChanges: b.skipPlanChanges,
+			forgetResources: b.forgetResources,
+			forgetModules:   b.forgetModules,
 		}
 	}
 }

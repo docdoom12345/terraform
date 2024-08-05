@@ -1,27 +1,33 @@
-## 1.4.0 (Unreleased)
+## 1.10.0 (Unreleased)
 
 BUG FIXES:
 
-* The module installer will now record in its manifest a correct module source URL after normalization when the URL given as input contains both a query string portion and a subdirectory portion. Terraform itself doesn't currently make use of this information and so this is just a cosmetic fix to make the recorded metadata more correct. [GH-31636]
+- The error message for an invalid default value for an input variable now indicates when the problem is with a nested value in a complex data type. [GH-35465]
+- Sensitive marks could be incorrectly transferred to nested resource values, causing erroneous changes during a plan [GH-35501]
 
 ENHANCEMENTS:
 
-* `terraform init` will now ignore entries in the optional global provider cache directory unless they match a checksum already tracked in the current configuration's dependency lock file. This therefore avoids the long-standing problem that when installing a new provider for the first time from the cache we can't determine the full set of checksums to include in the lock file. Once the lock file has been updated to include a checksum covering the item in the global cache, Terraform will then use the cache entry for subsequent installation of the same provider package. [GH-32129]
-* The "Failed to install provider" error message now includes the reason a provider could not be installed. [GH-31898]
-* backend/gcs: Add `kms_encryption_key` argument, to allow encryption of state files using Cloud KMS keys. [GH-24967]
-* backend/gcs: Add `storage_custom_endpoint` argument, to allow communication with the backend via a Private Service Connect endpoint. [GH-28856]
-* backend/gcs: Update documentation for usage of `gcs` with `terraform_remote_state` [GH-32065]
+- The `element` function now accepts negative indices [GH-35501]
 
 EXPERIMENTS:
 
-* Since its introduction the `yamlencode` function's documentation carried a warning that it was experimental. This predated our more formalized idea of language experiments and so wasn't guarded by an explicit opt-in, but the intention was to allow for small adjustments to its behavior if we learned it was producing invalid YAML in some cases, due to the relative complexity of the YAML specification.
+Experiments are only enabled in alpha releases of Terraform CLI. The following features are not yet available in stable releases.
 
-    From Terraform v1.4 onwards, `yamlencode` is no longer documented as experimental and is now subject to the Terraform v1.x Compatibility Promises. There are no changes to its previous behavior in v1.3 and so no special action is required when upgrading.
+* `ephemeral_values`: This [language experiment](https://developer.hashicorp.com/terraform/language/settings#experimental-language-features) introduces a new special kind of value which Terraform allows to change between the plan phase and the apply phase, and between plan/apply rounds. Ephemeral values are never persisted in saved plan files or state snapshots, and so can only be used in parts of the language that don't require values to persist in those artifacts. Ephemeral input values are the main initial example of this concept, allowing the use of input variables to provide dynamic credentials that must change between plan and apply.
+* `terraform test` accepts a new option `-junit-xml=FILENAME`. If specified, and if the test configuration is valid enough to begin executing, then Terraform writes a JUnit XML test result report to the given filename, describing similar information as included in the normal test output. ([#34291](https://github.com/hashicorp/terraform/issues/34291))
+* The new command `terraform rpcapi` exposes some Terraform Core functionality through an RPC interface compatible with [`go-plugin`](https://github.com/hashicorp/go-plugin). The exact RPC API exposed here is currently subject to change at any time, because it's here primarily as a vehicle to support the [Terraform Stacks](https://www.hashicorp.com/blog/terraform-stacks-explained) private preview and so will be broken if necessary to respond to feedback from private preview participants, or possibly for other reasons. Do not use this mechanism yet outside of Terraform Stacks private preview.
+* The experimental "deferred actions" feature, enabled by passing the `-allow-deferral` option to `terraform plan`, permits `count` and `for_each` arguments in `module`, `resource`, and `data` blocks to have unknown values and allows providers to react more flexibly to unknown values. This experiment is under active development, and so it's not yet useful to participate in this experiment
 
 ## Previous Releases
 
-For information on prior major and minor releases, see their changelogs:
+For information on prior major and minor releases, refer to their changelogs:
 
+* [v1.9](https://github.com/hashicorp/terraform/blob/v1.9/CHANGELOG.md)
+* [v1.8](https://github.com/hashicorp/terraform/blob/v1.8/CHANGELOG.md)
+* [v1.7](https://github.com/hashicorp/terraform/blob/v1.7/CHANGELOG.md)
+* [v1.6](https://github.com/hashicorp/terraform/blob/v1.6/CHANGELOG.md)
+* [v1.5](https://github.com/hashicorp/terraform/blob/v1.5/CHANGELOG.md)
+* [v1.4](https://github.com/hashicorp/terraform/blob/v1.4/CHANGELOG.md)
 * [v1.3](https://github.com/hashicorp/terraform/blob/v1.3/CHANGELOG.md)
 * [v1.2](https://github.com/hashicorp/terraform/blob/v1.2/CHANGELOG.md)
 * [v1.1](https://github.com/hashicorp/terraform/blob/v1.1/CHANGELOG.md)
